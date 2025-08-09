@@ -1,0 +1,366 @@
+-- Auto Stage Teleporter — Mobile UI (Show/Hide) + Loop-aware Reset + UI Watchdog
+-- by you + chatgpt
+
+-- ===== CONFIG =====
+local START_STAGE = 1
+local END_STAGE   = 8
+local INTERVAL    = 2    -- detik antar teleport
+local OFFSET_Y    = 4    -- offset naik
+-- ===================
+
+local Players    = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local StarterGui = game:GetService("StarterGui")
+local LP         = Players.LocalPlayer
+
+-- ---------- Utils: Notify ----------
+local function notify(title, text)
+    pcall(function()
+        StarterGui:SetCore("SendNotification", {Title = title, Text = text, Duration = 4})
+    end)
+end
+
+-- ---------- UI Parent (robust) ----------
+local function pickGuiParent()
+    local ok, p = pcall(function()
+        if gethui then
+            local h = gethui()
+            if typeof(h) == "Instance" then return h end
+        end
+        return game:GetService("CoreGui")
+    end)
+    if ok and p then return p end
+    local pg = LP:FindFirstChildOfClass("PlayerGui") or LP:WaitForChild("PlayerGui", 5)
+    return pg or game:GetService("CoreGui")
+end
+
+local function protectGuiIfPossible(gui)
+    pcall(function()
+        if syn and syn.protect_gui then syn.protect_gui(gui) end
+        if protectgui then protectgui(gui) end
+    end)
+end
+
+-- ---------- Character / TP helpers ----------
+local function getHRP()
+    local char = LP.Character or LP.CharacterAdded:Wait()
+    return char:WaitForChild("HumanoidRootPart", 10)
+end
+
+local function ensurePart(inst)
+    if not inst then return nil end
+    if inst:IsA("BasePart") then return inst end
+    if inst:IsA("Model") and inst.PrimaryPart then return inst.PrimaryPart end
+    for _, d in ipairs(inst:GetDescendants()) do
+        if d:IsA("BasePart") then return d end
+    end
+    return nil
+end
+
+local function tpToCheckpoint(num)
+    local cfolder = workspace:FindFirstChild("Checkpoints")
+    if not cfolder then return false end
+    local node = cfolder:FindFirstChild(tostring(num))
+    if not node then return false end
+    local part = ensurePart(node)
+    if not part then return false end
+    local hrp = getHRP()
+    if not hrp then return false end
+    pcall(function()
+        hrp.CFrame = CFrame.new(part.Position + Vector3.new(0, OFFSET_Y, 0))
+    end)
+    return true
+end
+
+-- ---------- Stage / Summit detection ----------
+local STAGE_KEYS  = {"stage","checkpoint","level"}
+local SUMMIT_KEYS = {"summit"}
+
+local function hasKey(name, keys)
+    name = string.lower(tostring(name or ""))
+    for _, k in ipairs(keys) do
+        if string.find(name, k, 1, true) then return true end
+    end
+    return false
+end
+
+local function findNumberValue(keys)
+    local function scan(root)
+        if not root then return nil end
+        for _, v in ipairs(root:GetDescendants()) do
+            if (v:IsA("IntValue") or v:IsA("NumberValue")) and hasKey(v.Name, keys) then
+                return v
+            end
+        end
+        return nil
+    end
+    local ls = LP:FindFirstChild("leaderstats")
+    if ls then
+        local v = scan(ls)
+        if v then return v end
+    end
+    return scan(LP)
+end
+
+local function getStageAndSummit()
+    local stageObj  = findNumberValue(STAGE_KEYS)
+    local summitObj = findNumberValue(SUMMIT_KEYS)
+    local stage, summit = nil, nil
+    if stageObj  then pcall(function() stage  = tonumber(stageObj.Value)  end) end
+    if summitObj then pcall(function() summit = tonumber(summitObj.Value) end) end
+    return stage, summit
+end
+
+-- ---------- UI (ScreenGui + watchdog + mobile Show/Hide) ----------
+local Screen = Instance.new("ScreenGui")
+Screen.Name = "CP_TP_Mobile_Fixed"
+Screen.ResetOnSpawn = false
+Screen.Enabled = true
+Screen.DisplayOrder = 999999
+protectGuiIfPossible(Screen)
+Screen.Parent = pickGuiParent()
+
+-- Watchdog: re-parent bila diputus
+task.spawn(function()
+    while Screen and Screen.Parent do
+        task.wait(1)
+        local want = pickGuiParent()
+        if Screen.Parent ~= want then pcall(function() Screen.Parent = want end) end
+    end
+end)
+
+-- Panel utama
+local frame = Instance.new("Frame")
+frame.Size = UDim2.fromOffset(290, 160)
+frame.Position = UDim2.new(0, 20, 0, 150)
+frame.BackgroundColor3 = Color3.fromRGB(25, 25, 30)
+frame.Parent = Screen
+Instance.new("UICorner", frame).CornerRadius = UDim.new(0, 12)
+local stroke = Instance.new("UIStroke", frame)
+stroke.Color = Color3.fromRGB(120, 120, 160)
+stroke.Thickness = 1
+
+local title = Instance.new("TextLabel")
+title.BackgroundTransparency = 1
+title.Size = UDim2.new(1, -120, 0, 30)
+title.Position = UDim2.new(0, 12, 0, 6)
+title.Font = Enum.Font.GothamBold
+title.TextScaled = true
+title.TextXAlignment = Enum.TextXAlignment.Left
+title.Text = "Auto Stage TP (1-8)"
+title.TextColor3 = Color3.fromRGB(235, 235, 245)
+title.Parent = frame
+
+task.spawn(function()
+    local t = 0
+    while Screen.Parent do
+        t += RunService.RenderStepped:Wait()
+        title.TextColor3 = Color3.fromHSV((t*0.08)%1, 0.45, 1)
+    end
+end)
+
+-- Header buttons
+local btnMin = Instance.new("TextButton")
+btnMin.Size = UDim2.fromOffset(28, 28)
+btnMin.Position = UDim2.new(1, -92, 0, 7)
+btnMin.Text = "—"
+btnMin.TextScaled = true
+btnMin.Font = Enum.Font.GothamSemibold
+btnMin.BackgroundColor3 = Color3.fromRGB(40, 40, 55)
+btnMin.TextColor3 = Color3.fromRGB(230, 230, 240)
+btnMin.Parent = frame
+Instance.new("UICorner", btnMin).CornerRadius = UDim.new(0, 8)
+
+local btnHide = Instance.new("TextButton")
+btnHide.Size = UDim2.fromOffset(28, 28)
+btnHide.Position = UDim2.new(1, -60, 0, 7)
+btnHide.Text = "▢"
+btnHide.TextScaled = true
+btnHide.Font = Enum.Font.GothamSemibold
+btnHide.BackgroundColor3 = Color3.fromRGB(40, 55, 40)
+btnHide.TextColor3 = Color3.fromRGB(230, 255, 230)
+btnHide.Parent = frame
+Instance.new("UICorner", btnHide).CornerRadius = UDim.new(0, 8)
+
+local btnClose = Instance.new("TextButton")
+btnClose.Size = UDim2.fromOffset(28, 28)
+btnClose.Position = UDim2.new(1, -28, 0, 7)
+btnClose.Text = "X"
+btnClose.TextScaled = true
+btnClose.Font = Enum.Font.GothamSemibold
+btnClose.BackgroundColor3 = Color3.fromRGB(55, 40, 40)
+btnClose.TextColor3 = Color3.fromRGB(255, 230, 230)
+btnClose.Parent = frame
+Instance.new("UICorner", btnClose).CornerRadius = UDim.new(0, 8)
+
+local toggle = Instance.new("TextButton")
+toggle.Size = UDim2.new(1, -24, 0, 70)
+toggle.Position = UDim2.new(0, 12, 0, 66)
+toggle.Font = Enum.Font.GothamBlack
+toggle.TextScaled = true
+toggle.Text = "Teleport OFF"
+toggle.BackgroundColor3 = Color3.fromRGB(65, 30, 30)
+toggle.TextColor3 = Color3.fromRGB(255, 235, 235)
+toggle.Parent = frame
+Instance.new("UICorner", toggle).CornerRadius = UDim.new(0, 12)
+
+-- Drag panel via bar atas
+do
+    local dragging, p0, f0
+    frame.InputBegan:Connect(function(i)
+        local onTitle = (i.Position and (i.Position.Y - frame.AbsolutePosition.Y <= 42))
+        if i.UserInputType == Enum.UserInputType.MouseButton1 and onTitle then
+            dragging, p0, f0 = true, i.Position, frame.Position
+            i.Changed:Connect(function()
+                if i.UserInputState == Enum.UserInputState.End then dragging = false end
+            end)
+        end
+    end)
+    frame.InputChanged:Connect(function(i)
+        if dragging and i.UserInputType == Enum.UserInputType.MouseMovement then
+            local d = i.Position - p0
+            frame.Position = UDim2.new(f0.X.Scale, f0.X.Offset + d.X, f0.Y.Scale, f0.Y.Offset + d.Y)
+        end
+    end)
+end
+
+-- Show button (floating) saat panel di-hide
+local showBtn = Instance.new("TextButton")
+showBtn.Name = "ShowButton"
+showBtn.Size = UDim2.fromOffset(54, 54)
+showBtn.Position = UDim2.new(0, 20, 0, 120)
+showBtn.Text = "Show"
+showBtn.TextScaled = true
+showBtn.Font = Enum.Font.GothamSemibold
+showBtn.BackgroundColor3 = Color3.fromRGB(40, 80, 55)
+showBtn.TextColor3 = Color3.fromRGB(230, 255, 230)
+showBtn.Visible = false
+showBtn.Parent = Screen
+Instance.new("UICorner", showBtn).CornerRadius = UDim.new(1, 0)
+local showStroke = Instance.new("UIStroke", showBtn)
+showStroke.Color = Color3.fromRGB(110, 170, 120)
+showStroke.Thickness = 1
+
+-- Drag showBtn
+do
+    local dragging, p0, f0
+    showBtn.InputBegan:Connect(function(i)
+        if i.UserInputType == Enum.UserInputType.MouseButton1 then
+            dragging, p0, f0 = true, i.Position, showBtn.Position
+            i.Changed:Connect(function()
+                if i.UserInputState == Enum.UserInputState.End then dragging = false end
+            end)
+        end
+    end)
+    showBtn.InputChanged:Connect(function(i)
+        if dragging and i.UserInputType == Enum.UserInputType.MouseMovement then
+            local d = i.Position - p0
+            showBtn.Position = UDim2.new(f0.X.Scale, f0.X.Offset + d.X, f0.Y.Scale, f0.Y.Offset + d.Y)
+        end
+    end)
+end
+
+-- Minimize/Hide/Close handlers
+local minimized = false
+btnMin.MouseButton1Click:Connect(function()
+    minimized = not minimized
+    toggle.Visible = not minimized
+    frame.Size = minimized and UDim2.fromOffset(290, 52) or UDim2.fromOffset(290, 160)
+    btnMin.Text = minimized and "+" or "—"
+end)
+
+btnHide.MouseButton1Click:Connect(function()
+    frame.Visible = false
+    showBtn.Visible = true
+end)
+
+showBtn.MouseButton1Click:Connect(function()
+    frame.Visible = true
+    showBtn.Visible = false
+end)
+
+btnClose.MouseButton1Click:Connect(function()
+    showBtn:Destroy()
+    Screen:Destroy()
+end)
+
+-- ---------- Logic (auto-stage + loop-aware) ----------
+local active = false
+local lastSummit = nil
+
+local function setToggleUI(on)
+    if on then
+        toggle.Text = "Teleport ON"
+        toggle.BackgroundColor3 = Color3.fromRGB(40, 95, 55)
+        toggle.TextColor3 = Color3.fromRGB(230, 255, 230)
+    else
+        toggle.Text = "Teleport OFF"
+        toggle.BackgroundColor3 = Color3.fromRGB(65, 30, 30)
+        toggle.TextColor3 = Color3.fromRGB(255, 235, 235)
+    end
+end
+
+local function waitStageAtLeast(target, timeout)
+    local deadline = time() + (timeout or (INTERVAL + 1))
+    while time() < deadline do
+        local s = select(1, getStageAndSummit())
+        if s and s >= target then return true end
+        task.wait(0.1)
+    end
+    return false
+end
+
+local function loopAuto()
+    -- init summit baseline
+    local _, s0 = getStageAndSummit()
+    if s0 then lastSummit = s0 end
+
+    while active and Screen.Parent do
+        local stage, summit = getStageAndSummit()
+
+        -- Summit bertambah → reset ke 1
+        if summit and lastSummit and summit > lastSummit then
+            lastSummit = summit
+            tpToCheckpoint(1)
+            task.wait(INTERVAL)
+            goto continue
+        elseif summit and not lastSummit then
+            lastSummit = summit
+        end
+
+        if stage then
+            local nextStage = (stage == 0 or stage >= END_STAGE) and 1 or (stage + 1)
+            tpToCheckpoint(nextStage)
+            if nextStage ~= 1 then
+                waitStageAtLeast(nextStage, INTERVAL + 1)
+            end
+            task.wait(INTERVAL)
+        else
+            -- Fallback sekuensial (kalau nggak ada stage di leaderstats)
+            for i = START_STAGE, END_STAGE do
+                if not active or not Screen.Parent then break end
+                tpToCheckpoint(i)
+                task.wait(INTERVAL)
+            end
+        end
+
+        ::continue::
+    end
+end
+
+toggle.MouseButton1Click:Connect(function()
+    active = not active
+    setToggleUI(active)
+    if active then task.spawn(loopAuto) end
+end)
+
+LP.CharacterAdded:Connect(function()
+    if active and Screen.Parent then
+        task.delay(1, function()
+            if active and Screen.Parent then task.spawn(loopAuto) end
+        end)
+    end
+end)
+
+notify("Auto Stage TP", "UI aktif. Gunakan Hide/Show jika tertutup.")
+print("[Auto Stage TP] UI parent:", Screen.Parent:GetFullName(), "| Interval:", INTERVAL, "s")
